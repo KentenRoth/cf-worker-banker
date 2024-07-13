@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { jwt, decode, sign, verify } from 'hono/jwt';
 import { createToken, validateAccess } from './middleware';
 import { getCookie, setCookie } from 'hono/cookie';
 
@@ -10,6 +9,14 @@ type Env = {
 	REFRESH_TOKEN_SECRET: string;
 	ACCESS_TOKEN_SECRET: string;
 };
+
+interface User {
+	id: number;
+	username: string;
+	email: string | null;
+	password: string;
+	created_at: string;
+}
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -35,6 +42,15 @@ app.post('/login', async (c) => {
 	const data = await c.req.json();
 	const tokens = await createToken(data, c.env);
 	const { accessToken, refreshToken } = tokens;
+
+	const user = (await c.env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(data.username).run()) as D1Result<User>;
+	if (user.results.length === 0) return c.json({ error: 'User not found' }, 404);
+
+	const validPassword = await bcrypt.compare(data.password, user.results[0].password);
+	if (!validPassword) return c.json({ error: 'Invalid password' }, 401);
+
+	const setToken = await c.env.DB.prepare('INSERT INTO tokens (user_id, token) VALUES (?, ?)').bind(user.results[0].id, refreshToken).run();
+	if (!setToken) return c.json({ error: 'Error creating token' }, 500);
 
 	setCookie(c, 'refreshToken', refreshToken, { httpOnly: true, secure: true, sameSite: 'strict' });
 	return c.json({ accessToken });
