@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { createToken, validateAccess } from './middleware';
 import { getCookie, setCookie } from 'hono/cookie';
 
+const { getUserID, getGameID } = require('./dbutils');
 const bcrypt = require('bcryptjs');
 
 type Env = {
@@ -15,13 +16,6 @@ interface User {
 	username: string;
 	email: string | null;
 	password: string;
-	created_at: string;
-}
-
-interface Game {
-	id: number;
-	name: string;
-	created_by_id: number;
 	created_at: string;
 }
 
@@ -69,12 +63,15 @@ app.post('/requests', validateAccess, async (c) => {});
 // Create Game
 app.post('/games', validateAccess, async (c) => {
 	const data = await c.req.json();
-	const getUserID = (await c.env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(data.username).run()) as D1Result<User>;
-	if (getUserID.results.length === 0) return c.json({ error: 'User not found' }, 404);
+
+	const userId = await getUserID(c, data.username);
+	if (!userId) return c.json({ error: 'User not found' }, 404);
+
 	const createGame = await c.env.DB.prepare('INSERT INTO games (name, created_by_id) VALUES (?, ?)')
 		.bind(data.name, getUserID.results[0].id)
 		.run();
 	if (!createGame) return c.json({ error: 'Error creating game' }, 500);
+
 	const gameId = createGame.meta.last_row_id;
 	const addPlayerResult = await c.env.DB.prepare('INSERT INTO players (user_id, game_id) VALUES (?, ?)')
 		.bind(getUserID.results[0].id, gameId)
@@ -87,22 +84,26 @@ app.post('/games', validateAccess, async (c) => {
 // Create Player
 app.post('/players', validateAccess, async (c) => {
 	const data = await c.req.json();
-	const getCreatedByID = (await c.env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(data.created_by).run()) as D1Result<User>;
-	if (getCreatedByID.results.length === 0) return c.json({ error: 'User not found' }, 404);
-	const getUserID = (await c.env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(data.username).run()) as D1Result<User>;
-	if (getUserID.results.length === 0) return c.json({ error: 'User not found' }, 404);
-	const getGameID = (await c.env.DB.prepare('SELECT id FROM games WHERE name = ? AND created_by_id = ?')
-		.bind(data.game, getCreatedByID.results[0].id)
-		.run()) as D1Result<Game>;
-	if (getGameID.results.length === 0) return c.json({ error: 'Game not found' }, 404);
-	const createPlayer = await c.env.DB.prepare('INSERT INTO players (user_id, game_id) VALUES (?, ?)')
-		.bind(getUserID.results[0].id, getGameID.results[0].id)
-		.run();
+
+	const createdById = await getUserID(c, data.created_by);
+	if (!createdById) return c.json({ error: 'User not found' }, 404);
+
+	const userId = await getUserID(c, data.username);
+	if (!userId) return c.json({ error: 'User not found' }, 404);
+
+	const gameId = await getGameID(c, data.game, createdById);
+	if (!gameId) return c.json({ error: 'Game not found' }, 404);
+
+	const createPlayer = await c.env.DB.prepare('INSERT INTO players (user_id, game_id) VALUES (?, ?)').bind(userId, gameId).run();
 	if (!createPlayer) return c.json({ error: 'Error creating player' }, 500);
+
 	return c.json('Player Added');
 });
 
 // Create Trade
-app.post('/trades', validateAccess, async (c) => {});
+app.post('/trades', validateAccess, async (c) => {
+	console.log(c);
+	return c.json('Trade Added');
+});
 
 export default app;
