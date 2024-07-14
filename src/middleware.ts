@@ -52,7 +52,7 @@ const refreshAccessToken = async (refreshToken: string, env: Env): Promise<strin
 
 export const validateAccess: MiddlewareHandler = async (c, next) => {
 	const accessToken = c.req.header('Authorization')?.split(' ')[1];
-	const refreshToken = getCookie(c, c.env.REFRESH_TOKEN_SECRET);
+	const refreshToken = await getCookie(c, 'refreshToken');
 	if (!accessToken || !(await verifyAccessToken(accessToken, c.env))) {
 		if (!refreshToken || !(await verifyRefreshToken(refreshToken, c.env))) {
 			return c.json({ error: 'Please Login' }, 401);
