@@ -60,7 +60,16 @@ app.post('/login', async (c) => {
 app.post('/requests', validateAccess, async (c) => {});
 
 // Create Game
-app.post('/games', validateAccess, async (c) => {});
+app.post('/games', validateAccess, async (c) => {
+	const data = await c.req.json();
+	const getUserID = (await c.env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(data.username).run()) as D1Result<User>;
+	if (getUserID.results.length === 0) return c.json({ error: 'User not found' }, 404);
+	const createGame = await c.env.DB.prepare('INSERT INTO games (name, created_by_id) VALUES (?, ?)')
+		.bind(data.name, getUserID.results[0].id)
+		.run();
+	if (!createGame) return c.json({ error: 'Error creating game' }, 500);
+	return c.json(createGame);
+});
 
 // Create Player
 app.post('/players', validateAccess, async (c) => {});
