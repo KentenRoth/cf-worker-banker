@@ -1,8 +1,10 @@
 import { Hono } from 'hono';
 import { createToken, validateAccess } from './middleware';
 import { getCookie, setCookie } from 'hono/cookie';
+import { User, Game, Player, Requests, Trades } from './Types/types';
+import { verify } from 'hono/jwt';
 
-const { getUserID, getGameID } = require('./dbutils');
+const { getUserID, findUserID } = require('./Utils/dbutils');
 const bcrypt = require('bcryptjs');
 
 type Env = {
@@ -11,16 +13,11 @@ type Env = {
 	ACCESS_TOKEN_SECRET: string;
 };
 
-interface User {
-	id: number;
-	username: string;
-	email: string | null;
-	password: string;
-	created_at: string;
-}
+type PlayerUpdateFields = Pick<Player, 'role' | 'money' | 'properties' | 'piece'>;
 
 const app = new Hono<{ Bindings: Env }>();
 
+// Signup
 app.post('/signup', async (c) => {
 	const data = await c.req.json();
 	const tokens = await createToken(data, c.env);
@@ -39,6 +36,7 @@ app.post('/signup', async (c) => {
 	return c.json({ accessToken });
 });
 
+// Login
 app.post('/login', async (c) => {
 	const data = await c.req.json();
 	const tokens = await createToken(data, c.env);
@@ -57,8 +55,35 @@ app.post('/login', async (c) => {
 	return c.json({ accessToken });
 });
 
-// Friends/Game Requests
-app.post('/requests', validateAccess, async (c) => {});
+// Logout
+app.post('/logout', async (c) => {
+	const refreshToken = getCookie(c, 'refreshToken');
+	if (!refreshToken) return c.json({ error: 'No token found' }, 404);
+
+	const deleteToken = await c.env.DB.prepare('DELETE FROM tokens WHERE token = ?').bind(refreshToken).run();
+	if (!deleteToken) return c.json({ error: 'Error deleting token' }, 500);
+
+	return c.json('Logged out');
+});
+
+// Logout All
+app.post('/logout/all', async (c) => {
+	const refreshToken = getCookie(c, 'refreshToken');
+	if (!refreshToken) return c.json({ error: 'No token found' }, 404);
+	let userId;
+	try {
+		const decoded = await verify(refreshToken, c.env.REFRESH_TOKEN_SECRET);
+		userId = await findUserID(c, decoded.username);
+		console.log('userId', userId);
+	} catch (error) {
+		return c.json({ error: 'Invalid token' }, 401);
+	}
+
+	const deleteTokens = await c.env.DB.prepare('DELETE FROM tokens WHERE user_id = ?').bind(userId).run();
+	if (!deleteTokens) return c.json({ error: 'Error deleting tokens' }, 500);
+
+	return c.json('Logged out');
+});
 
 // Create Game
 app.post('/games', validateAccess, async (c) => {
@@ -81,18 +106,72 @@ app.post('/games', validateAccess, async (c) => {
 	return c.json('Game Created');
 });
 
+// Get Games
+// TODO: Tested, but currently all users are only in 1 game.
+app.get('/games', validateAccess, async (c) => {
+	const userId = await getUserID(c);
+
+	const playerGames = (await c.env.DB.prepare('SELECT game_id FROM players WHERE user_id = ?').bind(userId).run()) as D1Result<{
+		game_id: number;
+	}>;
+	const playerGameIds = playerGames.results.map((row) => row.game_id);
+
+	const playerGameDetails = (await c.env.DB.prepare(
+		`SELECT * FROM games WHERE id IN (${playerGameIds.join(',')})`
+	).run()) as D1Result<Game>;
+
+	return c.json(playerGameDetails.results);
+});
+
+// Get Single Game
+app.get('/games/:id', validateAccess, async (c) => {
+	const gameId = c.req.param('id');
+
+	const gameResult = (await c.env.DB.prepare(
+		`
+        SELECT games.*, users.username AS creator_username 
+        FROM games 
+        JOIN users ON games.created_by_id = users.id 
+        WHERE games.id = ?
+    `
+	)
+		.bind(gameId)
+		.run()) as D1Result<Game & { creator_username: string }>;
+
+	if (gameResult.results.length === 0) return c.json({ error: 'Game not found' }, 404);
+
+	const game = gameResult.results[0];
+
+	const playersResult = (await c.env.DB.prepare(
+		`
+        SELECT players.*, users.username 
+        FROM players 
+        JOIN users ON players.user_id = users.id 
+        WHERE players.game_id = ?
+    `
+	)
+		.bind(gameId)
+		.run()) as D1Result<Player & { username: string }>;
+
+	const players = playersResult.results;
+
+	return c.json({ game, players });
+});
+
+// Delete Game
+app.delete('/games/:id', validateAccess, async (c) => {});
+
 // Create Player
 app.post('/players', validateAccess, async (c) => {
 	const data = await c.req.json();
 
-	const createdById = await getUserID(c, data.created_by);
+	const createdById = await findUserID(c, data.created_by);
 	if (!createdById) return c.json({ error: 'User not found' }, 404);
 
-	const userId = await getUserID(c, data.username);
+	const userId = await getUserID(c);
 	if (!userId) return c.json({ error: 'User not found' }, 404);
 
-	const gameId = await getGameID(c, data.game, createdById);
-	if (!gameId) return c.json({ error: 'Game not found' }, 404);
+	const gameId = data.game_id;
 
 	const createPlayer = await c.env.DB.prepare('INSERT INTO players (user_id, game_id) VALUES (?, ?)').bind(userId, gameId).run();
 	if (!createPlayer) return c.json({ error: 'Error creating player' }, 500);
@@ -100,10 +179,173 @@ app.post('/players', validateAccess, async (c) => {
 	return c.json('Player Added');
 });
 
+// Update Player
+app.patch('/players', validateAccess, async (c) => {
+	const data = await c.req.json();
+
+	const userId = await getUserID(c);
+	if (!userId) return c.json({ error: 'User not found' }, 404);
+
+	const gameId = data.game;
+
+	const allowedFields: (keyof PlayerUpdateFields)[] = ['role', 'money', 'properties', 'piece'];
+	const fieldsToUpdate: string[] = [];
+	const values = [];
+
+	allowedFields.forEach((field) => {
+		if (data[field] !== undefined) {
+			fieldsToUpdate.push(`${field} = ?`);
+			values.push(data[field]);
+		}
+	});
+
+	if (fieldsToUpdate.length === 0) {
+		return c.json({ error: 'No valid fields to update' }, 400);
+	}
+
+	values.push(userId, gameId);
+
+	const updateQuery = `UPDATE players SET ${fieldsToUpdate.join(', ')} WHERE user_id = ? AND game_id = ?`;
+
+	const updatePlayer = await c.env.DB.prepare(updateQuery)
+		.bind(...values)
+		.run();
+	if (!updatePlayer) return c.json({ error: 'Error updating player' }, 500);
+
+	return c.json('Player Updated');
+});
+
+// Delete Player
+// TODO: NOT TESTED
+app.delete('/players', validateAccess, async (c) => {
+	const data = await c.req.json();
+
+	const userId = await getUserID(c);
+	if (!userId) return c.json({ error: 'User not found' }, 404);
+
+	const gameId = data.game;
+
+	const deletePlayer = await c.env.DB.prepare('DELETE FROM players WHERE user_id = ? AND game_id = ?').bind(userId, gameId).run();
+	if (!deletePlayer) return c.json({ error: 'Error deleting player' }, 500);
+
+	return c.json('Player Deleted');
+});
+
+// Delete all players in game
+// TODO: NOT TESTED
+app.delete('/players/gameall', validateAccess, async (c) => {
+	const data = await c.req.json();
+	const gameId = data.game;
+
+	const deletePlayers = await c.env.DB.prepare('DELETE FROM players WHERE game_id = ?').bind(gameId).run();
+	if (!deletePlayers) return c.json({ error: 'Error deleting players' }, 500);
+
+	return c.json('Players Deleted');
+});
+
+// Friends/Game Requests
+app.post('/requests', validateAccess, async (c) => {
+	const data = await c.req.json();
+
+	const sendingPlayerId = await getUserID(c);
+	if (!sendingPlayerId) return c.json({ error: 'Sending player not found' }, 404);
+
+	const receivingPlayerId = await findUserID(c, data.receiving_player);
+	if (!receivingPlayerId) return c.json({ error: 'Receiving player not found' }, 404);
+
+	const createRequest = await c.env.DB.prepare('INSERT INTO requests (sending_user_id, receiving_user_id, request_type) VALUES (?, ?, ?)')
+		.bind(sendingPlayerId, receivingPlayerId, data.request_type)
+		.run();
+	if (!createRequest) return c.json({ error: 'Error creating request' }, 500);
+
+	return c.json(createRequest);
+});
+
+// Get Friends/Game Requests
+app.get('/requests', validateAccess, async (c) => {
+	const user = await getUserID(c);
+
+	const requests = (await c.env.DB.prepare('SELECT * FROM requests WHERE sending_user_id = ? OR receiving_user_id = ?')
+		.bind(user, user)
+		.run()) as D1Result<Requests>;
+	if (!requests) return c.json({ error: 'Error fetching requests' }, 500);
+
+	return c.json(requests.results);
+});
+
+// Update Friends/Game Requests
+app.patch('/requests', validateAccess, async (c) => {
+	const data = await c.req.json();
+	const user = await getUserID(c);
+
+	const request = await c.env.DB.prepare('SELECT sending_user_id, receiving_user_id FROM requests WHERE id = ?').bind(data.id).first();
+	if (!request) return c.json({ error: 'Request not found' }, 404);
+
+	if (request.sending_user_id !== user && request.receiving_user_id !== user) {
+		return c.json({ error: 'Unauthorized' }, 403);
+	}
+
+	const updateRequest = await c.env.DB.prepare('UPDATE requests SET status = ? WHERE id = ?').bind(data.status, data.id).run();
+	if (!updateRequest) return c.json({ error: 'Error updating request' }, 500);
+
+	return c.json('Request Updated');
+});
+
 // Create Trade
 app.post('/trades', validateAccess, async (c) => {
-	console.log(c);
-	return c.json('Trade Added');
+	const data = await c.req.json();
+	const sendingPlayerId = await getUserID(c);
+
+	const recievingPlayerId = await findUserID(c, data.recieving_player);
+	if (!recievingPlayerId) return c.json({ error: 'Receiving player not found' }, 404);
+
+	const createTrade = await c.env.DB.prepare(
+		'INSERT INTO trades (game_id, sending_player_id, receiving_player_id, items_to_send, items_to_receive) VALUES (?, ?, ?, ?, ?)'
+	)
+		.bind(data.game_id, sendingPlayerId, recievingPlayerId, data.items_to_send, data.items_to_receive)
+		.run();
+
+	if (!createTrade) return c.json({ error: 'Error creating trade' }, 500);
+
+	return c.json('Trade Created');
+});
+
+// Get Trades
+app.get('/trades', validateAccess, async (c) => {
+	const user = await getUserID(c);
+	const data = await c.req.json();
+
+	const trades = (await c.env.DB.prepare(
+		`
+        SELECT trades.*, users.username AS sending_player_username, receiving_players.username AS receiving_player_username 
+        FROM trades 
+        JOIN users ON trades.sending_player_id = users.id 
+        JOIN users AS receiving_players ON trades.receiving_player_id = receiving_players.id 
+        WHERE (trades.sending_player_id = ? OR trades.receiving_player_id = ?) AND trades.game_id = ?
+    `
+	)
+		.bind(user, user, data.game_id)
+		.all()) as D1Result<Trades & { sending_player_username: string; receiving_player_username: string }>;
+
+	return c.json(trades.results);
+});
+
+// Update Trade
+app.patch('/trades', validateAccess, async (c) => {
+	const data = await c.req.json();
+	const user = await getUserID(c);
+
+	const trade = await c.env.DB.prepare('SELECT sending_player_id, receiving_player_id FROM trades WHERE id = ?').bind(data.id).first();
+	if (!trade) return c.json({ error: 'Trade not found' }, 404);
+
+	if (trade.sending_player_id !== user && trade.receiving_player_id !== user) {
+		return c.json({ error: 'Unauthorized' }, 403);
+	}
+
+	const updateTrade = await c.env.DB.prepare('UPDATE trades SET status = ? WHERE id = ?').bind(data.status, data.id).run();
+	if (!updateTrade) return c.json({ error: 'Error updating trade' }, 500);
+
+	return c.json('Trade Updated');
 });
 
 export default app;

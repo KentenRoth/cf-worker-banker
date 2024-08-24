@@ -53,13 +53,22 @@ const refreshAccessToken = async (refreshToken: string, env: Env): Promise<strin
 export const validateAccess: MiddlewareHandler = async (c, next) => {
 	const accessToken = c.req.header('Authorization')?.split(' ')[1];
 	const refreshToken = await getCookie(c, 'refreshToken');
+	let newAccessToken: string | null = null;
+
 	if (!accessToken || !(await verifyAccessToken(accessToken, c.env))) {
 		if (!refreshToken || !(await verifyRefreshToken(refreshToken, c.env))) {
 			return c.json({ error: 'Please Login' }, 401);
 		}
-		let newAccessToken = await refreshAccessToken(refreshToken, c.env);
-		return c.json({ accessToken: newAccessToken }, 200);
-	} else {
-		await next();
+		newAccessToken = await refreshAccessToken(refreshToken, c.env);
+		if (!newAccessToken) {
+			return c.json({ error: 'Invalid Refresh Token' }, 401);
+		}
+		console.log('New Access Token:', newAccessToken);
+		c.res.headers.set('accessToken', newAccessToken);
+	}
+	await next();
+
+	if (newAccessToken) {
+		return c.json({ newAccessToken });
 	}
 };
