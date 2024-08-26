@@ -85,6 +85,19 @@ app.post('/logout/all', async (c) => {
 	return c.json('Logged out');
 });
 
+// Get My Info
+app.get('/me', validateAccess, async (c) => {
+	const userId = await getUserID(c);
+	if (!userId) return c.json({ error: 'User not found' }, 404);
+
+	console.log('userId', userId);
+
+	const user = (await c.env.DB.prepare('SELECT username, email FROM users WHERE id = ?').bind(userId).run()) as D1Result<User>;
+	if (!user) return c.json({ error: 'User not found' }, 404);
+
+	return c.json(user.results[0]);
+});
+
 // Create Game
 app.post('/games', validateAccess, async (c) => {
 	const data = await c.req.json();
@@ -159,14 +172,31 @@ app.get('/games/:id', validateAccess, async (c) => {
 });
 
 // Delete Game
-app.delete('/games/:id', validateAccess, async (c) => {});
+app.delete('/games/:id', validateAccess, async (c) => {
+	const gameId = c.req.param('id');
+	const userId = await getUserID(c);
+
+	const gameResult = await c.env.DB.prepare('SELECT created_by_id FROM games WHERE id = ?').bind(gameId).first();
+	if (!gameResult) return c.json({ error: 'Game not found' }, 404);
+
+	const createdBy = gameResult.created_by_id;
+
+	if (userId !== createdBy) {
+		return c.json({ error: 'Unauthorized' }, 403);
+	}
+
+	const deletePlayers = await c.env.DB.prepare('DELETE FROM players WHERE game_id = ?').bind(gameId).run();
+	const deleteTrades = await c.env.DB.prepare('DELETE FROM trades WHERE game_id = ?').bind(gameId).run();
+	const deleteGame = await c.env.DB.prepare('DELETE FROM games WHERE id = ?').bind(gameId).run();
+
+	return c.json('Game Deleted');
+});
 
 // Create Player
 app.post('/players', validateAccess, async (c) => {
 	const data = await c.req.json();
 
-	const createdById = await findUserID(c, data.created_by);
-	if (!createdById) return c.json({ error: 'User not found' }, 404);
+	console.log(data);
 
 	const userId = await getUserID(c);
 	if (!userId) return c.json({ error: 'User not found' }, 404);
@@ -215,7 +245,7 @@ app.patch('/players', validateAccess, async (c) => {
 	return c.json('Player Updated');
 });
 
-// Delete Player
+// Remove Player From Game
 // TODO: NOT TESTED
 app.delete('/players', validateAccess, async (c) => {
 	const data = await c.req.json();
@@ -229,18 +259,6 @@ app.delete('/players', validateAccess, async (c) => {
 	if (!deletePlayer) return c.json({ error: 'Error deleting player' }, 500);
 
 	return c.json('Player Deleted');
-});
-
-// Delete all players in game
-// TODO: NOT TESTED
-app.delete('/players/gameall', validateAccess, async (c) => {
-	const data = await c.req.json();
-	const gameId = data.game;
-
-	const deletePlayers = await c.env.DB.prepare('DELETE FROM players WHERE game_id = ?').bind(gameId).run();
-	if (!deletePlayers) return c.json({ error: 'Error deleting players' }, 500);
-
-	return c.json('Players Deleted');
 });
 
 // Friends/Game Requests
@@ -299,10 +317,13 @@ app.post('/trades', validateAccess, async (c) => {
 	const recievingPlayerId = await findUserID(c, data.recieving_player);
 	if (!recievingPlayerId) return c.json({ error: 'Receiving player not found' }, 404);
 
+	const itemsToSend = JSON.stringify(data.items_to_send);
+	const itemsToReceive = JSON.stringify(data.items_to_receive);
+
 	const createTrade = await c.env.DB.prepare(
 		'INSERT INTO trades (game_id, sending_player_id, receiving_player_id, items_to_send, items_to_receive) VALUES (?, ?, ?, ?, ?)'
 	)
-		.bind(data.game_id, sendingPlayerId, recievingPlayerId, data.items_to_send, data.items_to_receive)
+		.bind(data.game_id, sendingPlayerId, recievingPlayerId, itemsToSend, itemsToReceive)
 		.run();
 
 	if (!createTrade) return c.json({ error: 'Error creating trade' }, 500);
