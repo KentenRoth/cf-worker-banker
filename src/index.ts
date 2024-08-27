@@ -13,9 +13,9 @@ type Env = {
 	ACCESS_TOKEN_SECRET: string;
 };
 
-type PlayerUpdateFields = Pick<Player, 'role' | 'money' | 'properties' | 'piece'>;
-
 const app = new Hono<{ Bindings: Env }>();
+
+// TODO: More data needed for more testing
 
 // Signup
 app.post('/signup', async (c) => {
@@ -195,13 +195,16 @@ app.delete('/games/:id', validateAccess, async (c) => {
 // Create Player
 app.post('/players', validateAccess, async (c) => {
 	const data = await c.req.json();
-
-	console.log(data);
+	const gameId = data.game_id;
 
 	const userId = await getUserID(c);
 	if (!userId) return c.json({ error: 'User not found' }, 404);
 
-	const gameId = data.game_id;
+	const existingPlayer = await c.env.DB.prepare(`SELECT 1 FROM players WHERE user_id = ? AND game_id = ?`).bind(userId, gameId).first();
+
+	if (existingPlayer) {
+		return c.json({ error: 'Player is already in the game' }, 400);
+	}
 
 	const createPlayer = await c.env.DB.prepare('INSERT INTO players (user_id, game_id) VALUES (?, ?)').bind(userId, gameId).run();
 	if (!createPlayer) return c.json({ error: 'Error creating player' }, 500);
@@ -210,6 +213,7 @@ app.post('/players', validateAccess, async (c) => {
 });
 
 // Update Player
+// TODO: NOT TESTED YET
 app.patch('/players', validateAccess, async (c) => {
 	const data = await c.req.json();
 
@@ -218,31 +222,27 @@ app.patch('/players', validateAccess, async (c) => {
 
 	const gameId = data.game;
 
-	const allowedFields: (keyof PlayerUpdateFields)[] = ['role', 'money', 'properties', 'piece'];
-	const fieldsToUpdate: string[] = [];
-	const values = [];
-
-	allowedFields.forEach((field) => {
-		if (data[field] !== undefined) {
-			fieldsToUpdate.push(`${field} = ?`);
-			values.push(data[field]);
-		}
-	});
-
-	if (fieldsToUpdate.length === 0) {
+	if (data.status === undefined) {
 		return c.json({ error: 'No valid fields to update' }, 400);
 	}
 
-	values.push(userId, gameId);
+	const tradeQuery = `SELECT sending_player_id, receiving_player_id FROM trades WHERE game_id = ? AND (sending_player_id = ? OR receiving_player_id = ?)`;
+	const trade = await c.env.DB.prepare(tradeQuery).bind(gameId, userId, userId).first();
 
-	const updateQuery = `UPDATE players SET ${fieldsToUpdate.join(', ')} WHERE user_id = ? AND game_id = ?`;
+	if (!trade) {
+		return c.json({ error: 'Trade not found or user not authorized' }, 404);
+	}
 
-	const updatePlayer = await c.env.DB.prepare(updateQuery)
+	const updateQuery = `UPDATE trades SET status = ? WHERE game_id = ? AND (sending_player_id = ? OR receiving_player_id = ?)`;
+	const values = [data.status, gameId, userId, userId];
+
+	const updateTrade = await c.env.DB.prepare(updateQuery)
 		.bind(...values)
 		.run();
-	if (!updatePlayer) return c.json({ error: 'Error updating player' }, 500);
 
-	return c.json('Player Updated');
+	if (!updateTrade) return c.json({ error: 'Error updating trade' }, 500);
+
+	return c.json('Trade Updated');
 });
 
 // Remove Player From Game
@@ -338,15 +338,16 @@ app.get('/trades', validateAccess, async (c) => {
 
 	const trades = (await c.env.DB.prepare(
 		`
-        SELECT trades.*, users.username AS sending_player_username, receiving_players.username AS receiving_player_username 
-        FROM trades 
-        JOIN users ON trades.sending_player_id = users.id 
-        JOIN users AS receiving_players ON trades.receiving_player_id = receiving_players.id 
-        WHERE (trades.sending_player_id = ? OR trades.receiving_player_id = ?) AND trades.game_id = ?
-    `
+		SELECT trades.*, users.username AS sending_player_username, receiving_players.username AS receiving_player_username 
+		FROM trades 
+		JOIN users ON trades.sending_player_id = users.id 
+		JOIN users AS receiving_players ON trades.receiving_player_id = receiving_players.id 
+		WHERE (trades.sending_player_id = ? OR trades.receiving_player_id = ?) AND trades.game_id = ?
+		`
 	)
 		.bind(user, user, data.game_id)
 		.all()) as D1Result<Trades & { sending_player_username: string; receiving_player_username: string }>;
+	console.log(trades);
 
 	return c.json(trades.results);
 });
@@ -354,16 +355,23 @@ app.get('/trades', validateAccess, async (c) => {
 // Update Trade
 app.patch('/trades', validateAccess, async (c) => {
 	const data = await c.req.json();
-	const user = await getUserID(c);
+	const userId = await getUserID(c);
 
-	const trade = await c.env.DB.prepare('SELECT sending_player_id, receiving_player_id FROM trades WHERE id = ?').bind(data.id).first();
+	const trade = await c.env.DB.prepare(`SELECT sending_player_id, receiving_player_id FROM trades WHERE game_id = ? AND id = ?`)
+		.bind(data.game_id, data.trade_id)
+		.first();
+
+	console.log(trade);
 	if (!trade) return c.json({ error: 'Trade not found' }, 404);
 
-	if (trade.sending_player_id !== user && trade.receiving_player_id !== user) {
-		return c.json({ error: 'Unauthorized' }, 403);
+	if (trade.sending_player_id !== userId && trade.receiving_player_id !== userId) {
+		return c.json({ error: 'User not authorized to update this trade' }, 403);
 	}
 
-	const updateTrade = await c.env.DB.prepare('UPDATE trades SET status = ? WHERE id = ?').bind(data.status, data.id).run();
+	const updateTrade = await c.env.DB.prepare(`UPDATE trades SET status = ? WHERE game_id = ? AND id = ?`)
+		.bind(data.status, data.game_id, data.trade_id)
+		.run();
+
 	if (!updateTrade) return c.json({ error: 'Error updating trade' }, 500);
 
 	return c.json('Trade Updated');
