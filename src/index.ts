@@ -14,8 +14,7 @@ type Env = {
 };
 
 const app = new Hono<{ Bindings: Env }>();
-
-// TODO: More data needed for more testing
+type PlayerUpdateFields = Pick<Player, 'role' | 'money' | 'properties' | 'piece'>;
 
 // Signup
 app.post('/signup', async (c) => {
@@ -102,25 +101,21 @@ app.get('/me', validateAccess, async (c) => {
 app.post('/games', validateAccess, async (c) => {
 	const data = await c.req.json();
 
-	const userId = await getUserID(c, data.username);
+	const userId = await getUserID(c);
+	console.log('userId', userId);
 	if (!userId) return c.json({ error: 'User not found' }, 404);
 
-	const createGame = await c.env.DB.prepare('INSERT INTO games (name, created_by_id) VALUES (?, ?)')
-		.bind(data.name, getUserID.results[0].id)
-		.run();
+	const createGame = await c.env.DB.prepare('INSERT INTO games (name, created_by_id) VALUES (?, ?)').bind(data.name, userId).run();
 	if (!createGame) return c.json({ error: 'Error creating game' }, 500);
 
 	const gameId = createGame.meta.last_row_id;
-	const addPlayerResult = await c.env.DB.prepare('INSERT INTO players (user_id, game_id) VALUES (?, ?)')
-		.bind(getUserID.results[0].id, gameId)
-		.run();
+	const addPlayerResult = await c.env.DB.prepare('INSERT INTO players (user_id, game_id) VALUES (?, ?)').bind(userId, gameId).run();
 	if (!addPlayerResult) return c.json({ error: 'Error adding player to game' }, 500);
 
 	return c.json('Game Created');
 });
 
 // Get Games
-// TODO: Tested, but currently all users are only in 1 game.
 app.get('/games', validateAccess, async (c) => {
 	const userId = await getUserID(c);
 
@@ -213,7 +208,6 @@ app.post('/players', validateAccess, async (c) => {
 });
 
 // Update Player
-// TODO: NOT TESTED YET
 app.patch('/players', validateAccess, async (c) => {
 	const data = await c.req.json();
 
@@ -222,31 +216,34 @@ app.patch('/players', validateAccess, async (c) => {
 
 	const gameId = data.game;
 
-	if (data.status === undefined) {
+	const allowedFields: (keyof PlayerUpdateFields)[] = ['role', 'money', 'properties', 'piece'];
+	const fieldsToUpdate: string[] = [];
+	const values = [];
+
+	allowedFields.forEach((field) => {
+		if (data[field] !== undefined) {
+			fieldsToUpdate.push(`${field} = ?`);
+			values.push(data[field]);
+		}
+	});
+
+	if (fieldsToUpdate.length === 0) {
 		return c.json({ error: 'No valid fields to update' }, 400);
 	}
 
-	const tradeQuery = `SELECT sending_player_id, receiving_player_id FROM trades WHERE game_id = ? AND (sending_player_id = ? OR receiving_player_id = ?)`;
-	const trade = await c.env.DB.prepare(tradeQuery).bind(gameId, userId, userId).first();
+	values.push(userId, gameId);
 
-	if (!trade) {
-		return c.json({ error: 'Trade not found or user not authorized' }, 404);
-	}
+	const updateQuery = `UPDATE players SET ${fieldsToUpdate.join(', ')} WHERE user_id = ? AND game_id = ?`;
 
-	const updateQuery = `UPDATE trades SET status = ? WHERE game_id = ? AND (sending_player_id = ? OR receiving_player_id = ?)`;
-	const values = [data.status, gameId, userId, userId];
-
-	const updateTrade = await c.env.DB.prepare(updateQuery)
+	const updatePlayer = await c.env.DB.prepare(updateQuery)
 		.bind(...values)
 		.run();
+	if (!updatePlayer) return c.json({ error: 'Error updating player' }, 500);
 
-	if (!updateTrade) return c.json({ error: 'Error updating trade' }, 500);
-
-	return c.json('Trade Updated');
+	return c.json('Player Updated');
 });
 
 // Remove Player From Game
-// TODO: NOT TESTED
 app.delete('/players', validateAccess, async (c) => {
 	const data = await c.req.json();
 
