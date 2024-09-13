@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { createToken, validateAccess } from './middleware';
 import { getCookie, setCookie } from 'hono/cookie';
 import { User, Game, Player, Requests, Trades } from './Types/types';
@@ -14,6 +15,7 @@ type Env = {
 };
 
 const app = new Hono<{ Bindings: Env }>();
+app.use(cors());
 type PlayerUpdateFields = Pick<Player, 'role' | 'money' | 'properties' | 'piece'>;
 
 // Signup
@@ -23,7 +25,9 @@ app.post('/signup', async (c) => {
 	const { accessToken, refreshToken } = tokens;
 
 	const hashPassword = await bcrypt.hash(data.password, 8);
-	const createUser = await c.env.DB.prepare('INSERT INTO users (username, password) VALUES (?, ?)').bind(data.username, hashPassword).run();
+	const createUser = await c.env.DB.prepare('INSERT INTO users (username, password, email) VALUES (?, ?, ?)')
+		.bind(data.username, hashPassword, data.email)
+		.run();
 	if (!createUser) return c.json({ error: 'Error creating user' }, 500);
 
 	const setToken = await c.env.DB.prepare('INSERT INTO tokens (user_id, token) VALUES (?, ?)')
