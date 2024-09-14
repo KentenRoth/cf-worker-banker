@@ -15,7 +15,7 @@ type Env = {
 };
 
 const app = new Hono<{ Bindings: Env }>();
-app.use(cors());
+app.use(cors({ origin: 'https://localhost:5173', credentials: true }));
 type PlayerUpdateFields = Pick<Player, 'role' | 'money' | 'properties' | 'piece'>;
 
 // Signup
@@ -35,7 +35,7 @@ app.post('/signup', async (c) => {
 		.run();
 	if (!setToken) return c.json({ error: 'Error creating token' }, 500);
 
-	setCookie(c, 'refreshToken', refreshToken, { httpOnly: true, secure: true, sameSite: 'strict' });
+	setCookie(c, 'refreshToken', refreshToken, { httpOnly: true, secure: true, sameSite: 'None' });
 	return c.json({ accessToken });
 });
 
@@ -54,7 +54,7 @@ app.post('/login', async (c) => {
 	const setToken = await c.env.DB.prepare('INSERT INTO tokens (user_id, token) VALUES (?, ?)').bind(user.results[0].id, refreshToken).run();
 	if (!setToken) return c.json({ error: 'Error creating token' }, 500);
 
-	setCookie(c, 'refreshToken', refreshToken, { httpOnly: true, secure: true, sameSite: 'strict' });
+	setCookie(c, 'refreshToken', refreshToken, { httpOnly: true, secure: true, sameSite: 'None' });
 	return c.json({ accessToken });
 });
 
