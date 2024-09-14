@@ -63,7 +63,6 @@ export const validateAccess: MiddlewareHandler = async (c, next) => {
 		if (!newAccessToken) {
 			return c.json({ error: 'Invalid Refresh Token' }, 401);
 		}
-		console.log('New Access Token:', newAccessToken);
 		c.res.headers.set('accessToken', newAccessToken);
 	}
 	await next();
