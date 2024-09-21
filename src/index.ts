@@ -66,7 +66,9 @@ app.post('/logout', async (c) => {
 	const deleteToken = await c.env.DB.prepare('DELETE FROM tokens WHERE token = ?').bind(refreshToken).run();
 	if (!deleteToken) return c.json({ error: 'Error deleting token' }, 500);
 
-	return c.json('Logged out');
+	setCookie(c, 'refreshToken', '', { httpOnly: true, secure: true, sameSite: 'None', maxAge: 0 });
+
+	return c.json({ message: 'Logged out' });
 });
 
 // Logout All
