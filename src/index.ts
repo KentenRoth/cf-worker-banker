@@ -106,7 +106,6 @@ app.post('/games', validateAccess, async (c) => {
 	const data = await c.req.json();
 
 	const userId = await getUserID(c);
-	console.log('userId', userId);
 	if (!userId) return c.json({ error: 'User not found' }, 404);
 
 	const createGame = await c.env.DB.prepare('INSERT INTO games (name, created_by_id) VALUES (?, ?)').bind(data.name, userId).run();
@@ -116,7 +115,10 @@ app.post('/games', validateAccess, async (c) => {
 	const addPlayerResult = await c.env.DB.prepare('INSERT INTO players (user_id, game_id) VALUES (?, ?)').bind(userId, gameId).run();
 	if (!addPlayerResult) return c.json({ error: 'Error adding player to game' }, 500);
 
-	return c.json('Game Created');
+	const game = await c.env.DB.prepare('SELECT * FROM games WHERE id = ?').bind(gameId).first();
+	if (!game) return c.json({ error: 'Error fetching created game' }, 500);
+
+	return c.json(game);
 });
 
 // Get Games
