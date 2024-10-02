@@ -25,7 +25,7 @@ app.post('/signup', async (c) => {
 	const { accessToken, refreshToken } = tokens;
 
 	const hashPassword = await bcrypt.hash(data.password, 8);
-	const createUser = await c.env.DB.prepare('INSERT INTO users (username, password, email) VALUES (?, ?, ?)')
+	const createUser = await c.env.DB.prepare('INSERT INTO users (username, username_lowercase, password, email) VALUES (?, LOWER(?), ?, ?)')
 		.bind(data.username, hashPassword, data.email)
 		.run();
 	if (!createUser) return c.json({ error: 'Error creating user' }, 500);
@@ -45,7 +45,7 @@ app.post('/login', async (c) => {
 	const tokens = await createToken(data, c.env);
 	const { accessToken, refreshToken } = tokens;
 
-	const user = (await c.env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(data.username).run()) as D1Result<User>;
+	const user = (await c.env.DB.prepare('SELECT * FROM users WHERE LOWER(username) = LOWER(?)').bind(data.username).run()) as D1Result<User>;
 	if (user.results.length === 0) return c.json({ error: 'User not found' }, 404);
 
 	const validPassword = await bcrypt.compare(data.password, user.results[0].password);

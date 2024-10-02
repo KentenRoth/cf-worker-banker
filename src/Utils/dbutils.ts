@@ -12,7 +12,7 @@ interface ExtendedContext extends Context<{ Bindings: Env }> {
 
 export async function findUserID(c: ExtendedContext, username: string): Promise<number | null> {
 	try {
-		const result = (await c.env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).run()) as D1Result<User>;
+		const result = (await c.env.DB.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').bind(username).run()) as D1Result<User>;
 		return result.results.length > 0 ? result.results[0].id : null;
 	} catch (error) {
 		console.error('Error fetching user ID:', error);
@@ -28,7 +28,7 @@ export async function getUserID(c: ExtendedContext): Promise<number | null> {
 	let username = decodedToken.payload.username;
 
 	try {
-		const result = (await c.env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).run()) as D1Result<User>;
+		const result = (await c.env.DB.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').bind(username).run()) as D1Result<User>;
 		return result.results.length > 0 ? result.results[0].id : null;
 	} catch (error) {
 		console.error('Error fetching user ID:', error);
