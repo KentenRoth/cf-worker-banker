@@ -138,7 +138,26 @@ app.get('/games', validateAccess, async (c) => {
 		`SELECT * FROM games WHERE id IN (${playerGameIds.join(',')})`
 	).run()) as D1Result<Game>;
 
-	return c.json(playerGameDetails.results);
+	const gamesWithPlayers = await Promise.all(
+		playerGameDetails.results.map(async (game) => {
+			const players = (await c.env.DB.prepare(
+				`
+                SELECT players.*, users.username 
+                FROM players 
+                JOIN users ON players.user_id = users.id 
+                WHERE players.game_id = ?
+            `
+			)
+				.bind(game.id)
+				.run()) as D1Result<Player & { username: string }>;
+			return {
+				...game,
+				players: players.results,
+			};
+		})
+	);
+
+	return c.json(gamesWithPlayers);
 });
 
 // Get Single Game
